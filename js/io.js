@@ -2,10 +2,11 @@
 const IO = (() => {
   const FIELDS = {
     name: ['наименование', 'название', 'товар', 'номенклатура', 'наименование товара', 'name', 'product', 'item', 'title'],
-    sku: ['артикул', 'код', 'код товара', 'sku', 'article', 'art', 'код номенклатуры', 'part number'],
-    barcode: ['штрихкод', 'штрих код', 'штрих-код', 'шк', 'ean', 'ean13', 'barcode', 'upc', 'gtin'],
-    qty: ['количество', 'кол во', 'кол-во', 'остаток', 'учет', 'учёт', 'по учету', 'qty', 'quantity', 'stock', 'остатки'],
-    price: ['цена', 'стоимость', 'цена за ед', 'price', 'cost', 'розничная цена', 'закупочная цена'],
+    sku: ['артикул', 'sku', 'article', 'art', 'part number', 'артикул товара'],
+    code: ['код', 'код товара', 'код номенклатуры', 'короткий код', 'code'],
+    barcode: ['штрихкод', 'штрих код', 'штрих-код', 'шк', 'ean', 'ean13', 'barcode', 'upc', 'gtin', 'штрихкоды'],
+    qty: ['количество', 'кол во', 'кол-во', 'остаток', 'учет', 'учёт', 'по учету', 'учетное количество', 'количество учет', 'остаток на складе', 'остаток на дату', 'остаток конечный', 'qty', 'quantity', 'stock', 'остатки'],
+    price: ['цена', 'стоимость', 'цена за ед', 'цена продажи', 'цена реализации', 'price', 'cost', 'розничная цена', 'закупочная цена', 'себестоимость'],
     unit: ['ед', 'ед изм', 'ед. изм.', 'единица', 'единица измерения', 'unit', 'uom'],
     category: ['категория', 'группа', 'группа товаров', 'раздел', 'category', 'group'],
     location: ['место', 'склад', 'ячейка', 'полка', 'зона', 'местоположение', 'location', 'bin', 'shelf'],
@@ -53,7 +54,7 @@ const IO = (() => {
       if (!name) continue;
       const g = f => map[f] === undefined ? '' : String(r[map[f]] ?? '').trim();
       out.push({
-        name, sku: g('sku'), barcode: g('barcode').replace(/\s/g, ''), qty: num(g('qty')), price: num(g('price')),
+        name, sku: g('sku'), code: g('code'), barcode: g('barcode').split(/[,;\s]+/).filter(Boolean)[0] || '', barcodes: g('barcode').split(/[,;\s]+/).filter(Boolean).slice(1), qty: num(g('qty')), price: num(g('price')),
         unit: g('unit') || 'шт', category: g('category'), location: g('location'), minQty: num(g('minQty')), notes: g('notes')
       });
     }
@@ -63,21 +64,24 @@ const IO = (() => {
   async function importItems(file) {
     const { rows, mapped } = await readSheet(file);
     const items = await DB.all('items');
-    const byBar = new Map(), bySku = new Map(), byName = new Map();
+    const byBar = new Map(), bySku = new Map(), byName = new Map(), byCode = new Map();
     for (const it of items) {
+      if (it.code) byCode.set(String(it.code), it);
       if (it.barcode) byBar.set(String(it.barcode), it);
       if (it.sku) bySku.set(norm(it.sku), it);
       byName.set(norm(it.name), it);
     }
     let added = 0, updated = 0; const toSave = [];
     for (const r of rows) {
-      let it = (r.barcode && byBar.get(r.barcode)) || (r.sku && bySku.get(norm(r.sku))) || byName.get(norm(r.name));
+      let it = (r.code && byCode.get(r.code)) || (r.barcode && byBar.get(r.barcode)) || (r.sku && bySku.get(norm(r.sku))) || byName.get(norm(r.name));
       if (it) {
-        for (const k of ['name', 'sku', 'barcode', 'unit', 'category', 'location', 'notes']) if (r[k]) it[k] = r[k];
+        for (const k of ['name', 'sku', 'code', 'barcode', 'unit', 'category', 'location', 'notes']) if (r[k]) it[k] = r[k];
         for (const k of ['qty', 'price', 'minQty']) if (r[k] !== null) it[k] = r[k];
+        if (r.barcodes.length) it.barcodes = [...new Set([...(it.barcodes || []), ...r.barcodes])];
         it.updatedAt = Date.now(); updated++;
       } else {
         it = { id: DB.uid(), photos: [], emb: [], createdAt: Date.now(), updatedAt: Date.now(), ...r, qty: r.qty ?? 0, price: r.price ?? 0, minQty: r.minQty ?? 0 };
+        if (it.code) byCode.set(it.code, it);
         if (it.barcode) byBar.set(it.barcode, it);
         if (it.sku) bySku.set(norm(it.sku), it);
         byName.set(norm(it.name), it);
@@ -114,14 +118,14 @@ const IO = (() => {
 
   async function exportCatalog(format = 'xlsx', share = false) {
     const items = await DB.all('items');
-    const head = ['Наименование', 'Артикул', 'Штрихкод', 'Категория', 'Место', 'Ед.', 'Цена', 'Количество', 'Мин. остаток', 'Примечание'];
-    const rows = [head, ...items.map(i => [i.name, i.sku, i.barcode, i.category, i.location, i.unit, i.price, i.qty, i.minQty, i.notes])];
+    const head = ['Наименование', 'Код', 'Артикул', 'Штрихкод', 'Категория', 'Место', 'Ед.', 'Цена', 'Количество', 'Мин. остаток', 'Примечание'];
+    const rows = [head, ...items.map(i => [i.name, i.code, i.sku, i.barcode, i.category, i.location, i.unit, i.price, i.qty, i.minQty, i.notes])];
     if (format === 'csv') {
       const csv = rows.map(r => r.map(v => { const s = v == null ? '' : String(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(';')).join('\r\n');
       return deliver(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }), `katalog_${stamp()}.csv`, share);
     }
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet(rows, [40, 14, 16, 16, 12, 6, 10, 10, 10, 30]), 'Каталог');
+    XLSX.utils.book_append_sheet(wb, sheet(rows, [40, 10, 14, 16, 16, 12, 6, 10, 10, 10, 30]), 'Каталог');
     return deliver(bookBlob(wb), `katalog_${stamp()}.xlsx`, share);
   }
 
@@ -214,6 +218,21 @@ const IO = (() => {
     return deliver(bookBlob(wb), `reviziya_${stamp()}.xlsx`, share);
   }
 
+  // Файл для загрузки в Saby: «Склад/Документы» → «+» → «Инвентаризации/Инвентаризация» → скрепка → «Разобрать».
+  // Saby сопоставляет товары по наименованию, штрихкоду и артикулу; заголовок в 1-й строке, данные со 2-й.
+  async function exportSaby(session, share = false) {
+    const items = await DB.all('items');
+    const { rows } = sessionRows(session, items);
+    const data = [['Наименование', 'Код', 'Артикул', 'Штрихкод', 'Ед. изм.', 'Количество', 'Цена']];
+    for (const r of rows) data.push([r.it.name, r.it.code || '', r.it.sku || '', r.it.barcode || '', r.it.unit || 'шт', r.fact, +r.it.price || 0]);
+    const wb = XLSX.utils.book_new();
+    const ws = sheet(data, [44, 12, 16, 16, 8, 12, 10]);
+    // штрихкоды и коды как текст, чтобы Excel не превратил их в 4,6E+12
+    for (let i = 1; i < data.length; i++) for (const col of ['B', 'C', 'D']) { const c = ws[col + (i + 1)]; if (c) { c.t = 's'; c.v = String(c.v); } }
+    XLSX.utils.book_append_sheet(wb, ws, 'Инвентаризация');
+    return deliver(bookBlob(wb), `saby_inventarizaciya_${stamp()}.xlsx`, share);
+  }
+
   async function template() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, sheet([
@@ -246,5 +265,5 @@ const IO = (() => {
     return { items: (data.items || []).length, sessions: (data.sessions || []).length, files: files.length };
   }
 
-  return { importItems, exportCatalog, exportReport, sessionRows, similarity, regrade, negativeSuspects, template, backup, restore, deliver };
+  return { importItems, exportCatalog, exportReport, exportSaby, sessionRows, similarity, regrade, negativeSuspects, template, backup, restore, deliver };
 })();

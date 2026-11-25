@@ -87,7 +87,7 @@
   const byId = id => items.find(i => i.id === id);
   const findCode = code => {
     const c = String(code).trim();
-    return items.find(i => i.barcode && String(i.barcode) === c) || items.find(i => i.sku && String(i.sku).toLowerCase() === c.toLowerCase()) || items.find(i => i.id === c);
+    return items.find(i => i.barcode && String(i.barcode) === c) || items.find(i => (i.barcodes || []).includes(c)) || items.find(i => i.code && String(i.code) === c) || items.find(i => i.sku && String(i.sku).toLowerCase() === c.toLowerCase()) || items.find(i => i.id === c);
   };
   async function saveItem(it) { it.updatedAt = Date.now(); await DB.put('items', it); const i = items.findIndex(x => x.id === it.id); if (i >= 0) items[i] = it; else items.push(it); }
   const saveSession = () => DB.put('sessions', session);
@@ -150,11 +150,11 @@
       <h3>Как посчитать склад за час</h3>
       <div class="card small">
         <ol style="margin:0;padding-left:18px;line-height:1.6">
-          <li>Загрузите остатки из Excel/1С («Ещё → Импорт»). Нет файла — товары создадутся при сканировании.</li>
+          <li>Выгрузите каталог с остатками из Saby в Excel и загрузите сюда («Ещё → Импорт»). Подробно — «Ещё → Как работать с Saby».</li>
           <li>Разбейте склад на зоны и раздайте зоны людям — у каждого свой телефон, потом объедините файлы.</li>
           <li>Режим <b>Сканер</b>: каждый пик = +1. Для коробок жмите +10/+24 или вводите число.</li>
           <li>Нет штрихкода — режим <b>Фото</b>: приложение узнает товар по снимку.</li>
-          <li>Нажмите «Завершить» — получите Excel с недостачами и излишками.</li>
+          <li>Нажмите «Завершить» → «Файл для Saby» и загрузите его в документ «Инвентаризация» в Saby.</li>
         </ol>
       </div>`;
     const h = $('#hImport'); if (h) h.onclick = doImport;
@@ -215,6 +215,7 @@
       <label class="field"><span>Наименование *</span><div class="row"><input type="text" id="fName" value="${esc(it.name)}"><button class="btn" id="fVoice">🎤</button></div></label>
       <div class="grid two">
         <label class="field"><span>Артикул</span><input type="text" id="fSku" value="${esc(it.sku)}"></label>
+        <label class="field"><span>Код (Saby)</span><input type="text" id="fCode" value="${esc(it.code || '')}"></label>
         <label class="field"><span>Штрихкод</span><div class="row"><input type="text" inputmode="numeric" id="fBar" value="${esc(it.barcode)}"><button class="btn" id="fScan">▦</button></div></label>
         <label class="field"><span>Категория</span><input type="text" id="fCat" list="catList" value="${esc(it.category)}"><datalist id="catList">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
         <label class="field"><span>Место / ячейка</span><input type="text" id="fLoc" list="locList" value="${esc(it.location)}"><datalist id="locList">${S.locations.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
@@ -260,7 +261,7 @@
         const dup = bar && items.find(x => x.barcode === bar && x.id !== it.id);
         if (dup) return toast('Этот штрихкод уже у товара «' + dup.name + '»');
         Object.assign(it, {
-          name, sku: $('#fSku', b).value.trim(), barcode: bar, category: $('#fCat', b).value.trim(), location: $('#fLoc', b).value.trim(),
+          name, sku: $('#fSku', b).value.trim(), code: $('#fCode', b).value.trim(), barcode: bar, category: $('#fCat', b).value.trim(), location: $('#fLoc', b).value.trim(),
           qty: +$('#fQty', b).value || 0, unit: $('#fUnit', b).value.trim() || 'шт', price: +$('#fPrice', b).value || 0, minQty: +$('#fMin', b).value || 0, notes: $('#fNotes', b).value
         });
         if (it.location && !S.locations.includes(it.location)) { S.locations.push(it.location); saveS(); }
@@ -507,6 +508,25 @@
       $('#uSkip', b).onclick = async () => { session.unknown.push({ code, qty: 1, loc: S.loc }); session.log.push({ t: Date.now(), id: '?unknown', d: 1, m: method, loc: S.loc }); await saveSession(); closeModal(); drawProgress(); toast('Записан как неизвестный'); };
     });
   }
+  function sabyHelp() {
+    modal('Работа с Saby', `<div class="small" style="line-height:1.55">
+      <b>1. Остатки из Saby → в Ревизор</b>
+      <ol style="padding-left:18px;margin:6px 0 12px">
+        <li>В Saby откройте «Каталог» (в Saby Bu — «Склад/Каталог и цены»), отметьте разделы → «Выгрузить» → Excel.</li>
+        <li>В «Отображение колонок» включите: код товара, артикул, штрихкод, остатки, цены → «Применить» → «Скачать».</li>
+        <li>Здесь: «Ещё → Импорт Excel» и выберите этот файл. Колонки распознаются сами.</li>
+      </ol>
+      <b>2. Считаете в Ревизоре</b> — сканер, фото, поиск. Минусы и пересорт подсвечиваются.
+      <br><br><b>3. Результат → в Saby</b>
+      <ol style="padding-left:18px;margin:6px 0 12px">
+        <li>В отчёте нажмите «Файл для Saby» (или 📤 — отправить себе на компьютер).</li>
+        <li>В Saby: «Склад/Документы» → «+» → «Инвентаризации/Инвентаризация». Проверьте организацию и склад, дату и способ «по количеству».</li>
+        <li>Вкладка со скрепкой → «Добавить/С компьютера» → файл → «Разобрать».</li>
+        <li>В поле «Разбор начинать с» укажите строку <b>2</b>. Проверьте колонки: «Количество» должно стать фактическим количеством. «Не задано» данные не загрузит.</li>
+        <li>«Загрузить» → сохраните шаблон (в следующий раз всё подставится само) → проверьте отклонения (красные — недостача, зелёные — излишки) → «Провести».</li>
+      </ol>
+      <p class="muted">Пересорт перед проведением лучше оформить в Saby отдельно, по листу «Пересорт» из отчёта Excel.</p></div>`);
+  }
   function pickItem(title, onPick) {
     modal(title, `<input type="search" id="pq" placeholder="Поиск"><div class="list" id="pl" style="margin-top:8px"></div>`, b => {
       const draw = () => {
@@ -646,6 +666,7 @@
       <div class="row wrap noprint" style="margin:10px 0">
         <button class="btn primary grow" id="rX">⬇️ Excel</button><button class="btn grow" id="rShare">📤 Отправить</button><button class="btn grow" id="rPrint">🖨️ Печать</button>
       </div>
+      <div class="row noprint" style="margin-bottom:10px"><button class="btn primary grow" id="rSaby">⬇️ Файл для Saby</button><button class="btn" id="rSabyS">📤</button><button class="btn" id="rSabyHelp">❓</button></div>
       ${s.finishedAt ? `<button class="btn block noprint" id="rApply" style="margin-bottom:10px">✔️ Принять факт как новые остатки</button>` : ''}
       <div class="seg noprint" id="rSeg"><button data-f="diff">Расхожд.</button><button data-f="regrade">Пересорт</button><button data-f="neg">Минусы</button><button data-f="none">Не счит.</button><button data-f="all">Все</button></div>
       <div class="card" style="padding:4px 8px;overflow-x:auto"><table class="rep"><thead id="rHead"></thead><tbody id="rBody"></tbody></table></div>`;
@@ -666,6 +687,9 @@
     $('#rX').onclick = () => IO.exportReport(s);
     $('#rShare').onclick = () => IO.exportReport(s, true);
     $('#rPrint').onclick = () => { filter = 'all'; draw(); window.print(); };
+    $('#rSaby').onclick = () => IO.exportSaby(s);
+    $('#rSabyS').onclick = () => IO.exportSaby(s, true);
+    $('#rSabyHelp').onclick = sabyHelp;
     const ap = $('#rApply');
     if (ap) ap.onclick = async () => {
       if (!(await confirmBox('Заменить количество «по учёту» на посчитанное? Непосчитанные товары станут 0 (если ревизия по всему каталогу).', 'Заменить'))) return;
@@ -761,6 +785,9 @@
   async function renderMore() {
     const u = await DB.usage();
     view.innerHTML = `
+      <h3>Saby</h3>
+      <div class="card small"><p style="margin-top:0">Загрузка остатков из Saby и выгрузка результата обратно в документ «Инвентаризация».</p>
+        <button class="btn block" id="mSaby">❓ Как работать с Saby</button></div>
       <h3>Каталог</h3>
       <div class="grid two">
         <button class="btn" id="mImp">⬆️ Импорт Excel / CSV</button><button class="btn" id="mTpl">📄 Шаблон Excel</button>
@@ -800,6 +827,7 @@
         <button class="btn danger block" id="mWipe">🗑️ Удалить все данные</button>
       </div>`;
     $('#mImp').onclick = doImport;
+    $('#mSaby').onclick = sabyHelp;
     $('#mTpl').onclick = () => IO.template();
     $('#mXlsx').onclick = () => IO.exportCatalog('xlsx');
     $('#mCsv').onclick = () => IO.exportCatalog('csv');
