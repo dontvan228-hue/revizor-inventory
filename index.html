@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ревизор — инвентаризация</title>
+<meta name="description" content="Быстрая инвентаризация с телефона: сканер штрихкодов, распознавание товара по фото, импорт и экспорт Excel.">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ревизор">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <h1 id="title">Ревизор</h1>
+  <div class="topbar-actions">
+    <span id="netState" class="pill" title="Сеть"></span>
+    <button id="installBtn" class="btn small" hidden>Установить</button>
+  </div>
+</header>
+
+<main id="view" class="view"></main>
+
+<nav class="tabbar" id="tabbar">
+  <a href="#home" data-tab="home"><span class="ic">🏠</span><span>Главная</span></a>
+  <a href="#items" data-tab="items"><span class="ic">📦</span><span>Товары</span></a>
+  <a href="#count" data-tab="count" class="primary"><span class="ic">📷</span><span>Считать</span></a>
+  <a href="#files" data-tab="files"><span class="ic">📁</span><span>Файлы</span></a>
+  <a href="#more" data-tab="more"><span class="ic">⚙️</span><span>Ещё</span></a>
+</nav>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-head"><h2 id="modalTitle"></h2><button class="icon-btn" id="modalClose" aria-label="Закрыть">✕</button></div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js" defer></script>
+<script src="js/db.js" defer></script>
+<script src="js/recognize.js" defer></script>
+<script src="js/io.js" defer></script>
+<script src="js/app.js" defer></script>
+</body>
+</html>
