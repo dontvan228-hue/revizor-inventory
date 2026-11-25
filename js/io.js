@@ -25,7 +25,17 @@ const IO = (() => {
     });
     return map;
   }
-  const num = v => { if (v === '' || v == null) return null; const n = parseFloat(String(v).replace(/\s/g, '').replace(',', '.')); return isNaN(n) ? null : n; };
+  // Короткое название без единиц измерения и скобок — это раздел каталога, а не товар
+  const isSection = n => n.length <= 32 && n.split(' ').length <= 5 && !/[()]|\d+[.,]?\d*\s*(мл|мг|ml|mg|шт|mah|ом|ohm|л|г|мм|затяж)/i.test(n);
+  const num = v => {
+    if (v === '' || v == null) return null;
+    if (typeof v === 'number') return v;
+    let s = String(v).replace(/[\s ₽руб.]*$/i, '').replace(/[\s ]/g, '');
+    if (/,\d{3}(\D|$)/.test(s) && s.includes('.')) s = s.replace(/,/g, '');      // 1,950.50
+    else if (/^-?\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');            // 1,950
+    else s = s.replace(',', '.');                                               // 89,90
+    const n = parseFloat(s); return isNaN(n) ? null : n;
+  };
 
   async function readSheet(file) {
     if (!window.XLSX) throw new Error('Библиотека Excel ещё грузится, попробуйте через секунду');
@@ -40,7 +50,7 @@ const IO = (() => {
       wb = XLSX.read(buf, { type: 'array' });
     }
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
     // ищем строку заголовков (первая, где распознано хотя бы "наименование")
     let hi = 0, map = {};
     for (let i = 0; i < Math.min(rows.length, 15); i++) {
@@ -49,13 +59,19 @@ const IO = (() => {
     }
     if (map.name === undefined) throw new Error('Не нашёл колонку «Наименование». Скачайте шаблон в разделе «Ещё».');
     const out = [];
+    let section = '';
     for (const r of rows.slice(hi + 1)) {
-      const name = String(r[map.name] || '').trim();
+      const rawName = String(r[map.name] || '');
+      const name = rawName.replace(/\s+/g, ' ').trim();
       if (!name) continue;
       const g = f => map[f] === undefined ? '' : String(r[map[f]] ?? '').trim();
+      // Строка-раздел (как в выгрузке каталога Saby): только короткое название, без цены/остатка/кодов
+      const others = Object.keys(map).filter(f => f !== 'name').some(f => g(f) !== '');
+      if (!others && isSection(name)) { section = name; continue; }
       out.push({
+        srcName: rawName.trim(), category: g('category') || section,
         name, sku: g('sku'), code: g('code'), barcode: g('barcode').split(/[,;\s]+/).filter(Boolean)[0] || '', barcodes: g('barcode').split(/[,;\s]+/).filter(Boolean).slice(1), qty: num(g('qty')), price: num(g('price')),
-        unit: g('unit') || 'шт', category: g('category'), location: g('location'), minQty: num(g('minQty')), notes: g('notes')
+        unit: g('unit') || 'шт', location: g('location'), minQty: num(g('minQty')), notes: g('notes')
       });
     }
     return { rows: out, mapped: Object.keys(map) };
@@ -71,26 +87,38 @@ const IO = (() => {
       if (it.sku) bySku.set(norm(it.sku), it);
       byName.set(norm(it.name), it);
     }
-    let added = 0, updated = 0; const toSave = [];
+    let added = 0, updated = 0, dups = 0; const toSave = []; const touched = new Set();
     for (const r of rows) {
       let it = (r.code && byCode.get(r.code)) || (r.barcode && byBar.get(r.barcode)) || (r.sku && bySku.get(norm(r.sku))) || byName.get(norm(r.name));
+      if (it && touched.has(it.id)) {
+        // Тот же товар второй карточкой в этом же файле (дубль в Saby): остатки складываем
+        it.qty = +((+it.qty || 0) + (r.qty || 0)).toFixed(3);
+        it.dupCards = (it.dupCards || 1) + 1;
+        it.dupInfo = [...(it.dupInfo || []), `${r.category || '—'}: ${r.qty ?? 0} шт по ${r.price ?? 0}`];
+        if (r.price && r.price !== it.price) it.priceConflict = true;
+        dups++; continue;
+      }
       if (it) {
-        for (const k of ['name', 'sku', 'code', 'barcode', 'unit', 'category', 'location', 'notes']) if (r[k]) it[k] = r[k];
+        it.dupCards = 1; it.dupInfo = [`${r.category || '—'}: ${r.qty ?? 0} шт по ${r.price ?? 0}`]; it.priceConflict = false;
+        for (const k of ['name', 'srcName', 'sku', 'code', 'barcode', 'unit', 'category', 'location', 'notes']) if (r[k]) it[k] = r[k];
+        if (r.barcode) it.srcBarcode = true;
         for (const k of ['qty', 'price', 'minQty']) if (r[k] !== null) it[k] = r[k];
+        if (r.qty === null && mapped.includes('qty')) it.qty = 0; // пустой остаток в выгрузке = 0
         if (r.barcodes.length) it.barcodes = [...new Set([...(it.barcodes || []), ...r.barcodes])];
         it.updatedAt = Date.now(); updated++;
       } else {
-        it = { id: DB.uid(), photos: [], emb: [], createdAt: Date.now(), updatedAt: Date.now(), ...r, qty: r.qty ?? 0, price: r.price ?? 0, minQty: r.minQty ?? 0 };
+        it = { id: DB.uid(), photos: [], emb: [], createdAt: Date.now(), updatedAt: Date.now(), ...r, srcBarcode: !!r.barcode, qty: r.qty ?? 0, price: r.price ?? 0, minQty: r.minQty ?? 0, dupCards: 1, dupInfo: [`${r.category || '—'}: ${r.qty ?? 0} шт по ${r.price ?? 0}`] };
         if (it.code) byCode.set(it.code, it);
         if (it.barcode) byBar.set(it.barcode, it);
         if (it.sku) bySku.set(norm(it.sku), it);
         byName.set(norm(it.name), it);
         added++;
       }
+      touched.add(it.id);
       toSave.push(it);
     }
     await DB.putMany('items', toSave);
-    return { added, updated, mapped };
+    return { added, updated, dups, mapped };
   }
 
   function bookBlob(wb) {
@@ -146,24 +174,46 @@ const IO = (() => {
 
   // ---------- пересорт и минусы ----------
   // Насколько два товара похожи (кандидаты на пересорт: продали/списали/приняли один вместо другого).
-  const toks = s => new Set(Recog.norm(s).split(' ').filter(w => w.length > 1));
+  // Вкусы и слова, которые в карточках пишут то по-английски, то по-русски
+  const DICT = {
+    watermelon: 'арбуз', ice: 'лед', icy: 'лед', mint: 'мята', peppermint: 'мята', pepper: 'перечн', grape: 'виноград', grapes: 'виноград',
+    strawberry: 'клубник', blueberry: 'черник', bluberry: 'черник', raspberry: 'малин', rasberry: 'малин', cherry: 'вишн', apple: 'яблок',
+    mango: 'манго', peach: 'персик', lemon: 'лимон', lime: 'лайм', banana: 'банан', kiwi: 'киви', pineapple: 'ананас', coconut: 'кокос',
+    coffee: 'кофе', vanilla: 'ванил', energy: 'энерге', cola: 'кола', grapefruit: 'грейпф', berries: 'ягод', berry: 'ягод', pear: 'груш',
+    orange: 'апельс', melon: 'дын', cranberry: 'клюкв', blackberry: 'ежевик', currant: 'смород', tobacco: 'табак', passion: 'маракуй',
+    guava: 'гуав', lychee: 'личи', cream: 'крем', candy: 'конфет', gum: 'жвачк', tea: 'чай', cool: 'холод', sour: 'кисл', pina: 'пина', colada: 'колад'
+  };
+  const STOP = new Set(['оэсдн', 'эсдн', 'электронная', 'сигарета', 'жидкость', 'для', 'с', 'и', 'со', 'в', 'затяжек', 'вкус', 'ароматом', 'шт', 'штук']);
+  const stem = w => { w = DICT[w] || w; if (/^(лед|ледян|льд|холод)/.test(w) && !/^леден/.test(w)) return 'лед'; if (w === 'дын') w = 'дыня'; if (/^[а-я]+$/.test(w) && w.length >= 4) return w.slice(0, 4); return w; };
+  const toks = s => new Set(Recog.norm(s).split(' ').filter(w => w.length > 1 && !STOP.has(w)).map(stem));
   const skuStem = s => String(s || '').toLowerCase().replace(/[^a-zа-я0-9]/gi, '').replace(/\d+$/, '').slice(0, 6);
+  // Вес слова: редкие слова (вкус, модель) важнее частых (salt, 30ml, затяжек)
+  let idf = null;
+  function buildIdf(items) {
+    const df = new Map();
+    for (const it of items) for (const t of toks(it.name)) df.set(t, (df.get(t) || 0) + 1);
+    idf = { n: items.length, df };
+  }
+  const weight = t => idf ? Math.log(1 + idf.n / (idf.df.get(t) || 1)) : 1;
   function similarity(a, b) {
     if (a.id === b.id) return 0;
     if ((a.unit || 'шт') !== (b.unit || 'шт')) return 0;
     const pa = +a.price || 0, pb = +b.price || 0;
     if (pa && pb && Math.max(pa, pb) / Math.min(pa, pb) > 3) return 0;
     const ta = toks(a.name), tb = toks(b.name);
-    let inter = 0; for (const w of ta) if (tb.has(w) || [...tb].some(x => w.length > 3 && x.length > 3 && (x.startsWith(w.slice(0, 4)) || w.startsWith(x.slice(0, 4))))) inter++;
-    let s = ta.size && tb.size ? inter / Math.max(ta.size, tb.size) : 0;
-    if (a.category && a.category === b.category) s += 0.2;
-    if (pa && pb && Math.max(pa, pb) / Math.min(pa, pb) <= 1.3) s += 0.1;
+    let wi = 0, wu = 0;
+    for (const t of new Set([...ta, ...tb])) { const w = weight(t); wu += w; if (ta.has(t) && tb.has(t)) wi += w; }
+    // основа — взвешенное совпадение слов (бренд, линейка, вкус); бонусы небольшие
+    let s = wu ? (wi / wu) * 0.85 : 0;
+    if (a.category && a.category === b.category) s += 0.1;
+    if (pa && pb && Math.max(pa, pb) / Math.min(pa, pb) <= 1.3) s += 0.05;
     const sa = skuStem(a.sku), sb = skuStem(b.sku);
-    if (sa.length >= 2 && sa === sb) s += 0.15;
+    if (sa.length >= 2 && sa === sb) s += 0.05;
     return Math.min(1, s);
   }
   // Подбирает пары «недостача ↔ излишек» похожих товаров и зачитывает количество.
   function regrade(rows, minSim = 0.4) {
+    buildIdf(rows.map(r => r.it));
     const shorts = rows.filter(r => r.diff < 0).map(r => ({ r, left: -r.diff }));
     const extras = rows.filter(r => r.diff > 0).map(r => ({ r, left: r.diff }));
     const cand = [];
@@ -180,8 +230,9 @@ const IO = (() => {
   }
   // Для товаров с минусом по учёту — похожие товары с плюсом (с чем вероятно пересорт).
   function negativeSuspects(items) {
+    if (!idf || idf.n !== items.length) buildIdf(items);
     return items.filter(i => (+i.qty || 0) < 0).map(neg => ({
-      neg, partners: items.filter(o => (+o.qty || 0) > 0).map(o => ({ o, sim: similarity(neg, o) })).filter(x => x.sim >= 0.4).sort((a, b) => b.sim - a.sim).slice(0, 3).map(x => x.o)
+      neg, partners: items.filter(o => (+o.qty || 0) > 0).map(o => ({ o, sim: similarity(neg, o) })).filter(x => x.sim >= 0.35).sort((a, b) => b.sim - a.sim).slice(0, 3).map(x => x.o)
     }));
   }
 
@@ -206,6 +257,11 @@ const IO = (() => {
       ...rg.pairs.map(p => [p.short.name, p.short.sku, p.extra.name, p.extra.sku, p.qty, +p.short.price || 0, +p.extra.price || 0, +(p.sumExtra - p.sumShort).toFixed(2), Math.round(p.sim * 100)]),
       [], [`Пересорт закрывает недостачи на сумму: ${rg.covered.toFixed(2)}`]
     ], [36, 12, 36, 12, 12, 12, 12, 14, 11]), 'Пересорт');
+    const dupRows = rows.filter(r => (r.it.dupCards || 1) > 1);
+    if (dupRows.length) XLSX.utils.book_append_sheet(wb, sheet([
+      ['Наименование', 'Карточек в Saby', 'Разбивка по карточкам', 'Разные цены', 'Учёт (сумма)', 'Факт'],
+      ...dupRows.map(r => [r.it.name, r.it.dupCards, (r.it.dupInfo || []).join('; '), r.it.priceConflict ? 'да' : '', r.book, r.fact])
+    ], [50, 10, 60, 10, 12, 10]), 'Дубли карточек');
     const negs = rows.filter(r => r.book < 0);
     if (negs.length) XLSX.utils.book_append_sheet(wb, sheet([
       ['Наименование', 'Артикул', 'По учёту', 'Факт', 'Разница', 'Возможная причина'],
@@ -224,7 +280,9 @@ const IO = (() => {
     const items = await DB.all('items');
     const { rows } = sessionRows(session, items);
     const data = [['Наименование', 'Код', 'Артикул', 'Штрихкод', 'Ед. изм.', 'Количество', 'Цена']];
-    for (const r of rows) data.push([r.it.name, r.it.code || '', r.it.sku || '', r.it.barcode || '', r.it.unit || 'шт', r.fact, +r.it.price || 0]);
+    // Наименование — ровно как в Saby (по нему Saby находит карточку). Штрихкоды, привязанные
+    // в Ревизоре, не отправляем: иначе Saby может завести лишнюю карточку.
+    for (const r of rows) data.push([r.it.srcName || r.it.name, r.it.code || '', r.it.sku || '', r.it.srcBarcode ? r.it.barcode : '', r.it.unit || 'шт', r.fact, +r.it.price || 0]);
     const wb = XLSX.utils.book_new();
     const ws = sheet(data, [44, 12, 16, 16, 8, 12, 10]);
     // штрихкоды и коды как текст, чтобы Excel не превратил их в 4,6E+12

@@ -95,6 +95,18 @@ const Recog = (() => {
     let hit = 0; for (const w of ht) { for (const x of qt) { if (x === w || (w.length > 3 && (x.startsWith(w) || w.startsWith(x)))) { hit++; break; } } }
     return hit / ht.size * 0.9;
   }
+  // Поиск по вводу пользователя: какая доля слов запроса есть в товаре (начало слова тоже считается)
+  function qScore(q, it) {
+    const qt = norm(q).split(' ').filter(Boolean); if (!qt.length) return 0;
+    const extra = norm([it.code, it.sku, it.barcode, ...(it.barcodes || [])].join(' '));
+    const hw = (norm(it.name) + ' ' + extra).split(' ');
+    let hit = 0; for (const w of qt) if (hw.some(h => h.startsWith(w) || (w.length > 3 && h.startsWith(w.slice(0, -1))))) hit++;
+    return hit / qt.length;
+  }
+  function search(q, items, top = 30) {
+    return items.map(i => ({ i, s: qScore(q, i) })).filter(x => x.s >= 0.99 || (x.s >= 0.6 && norm(q).split(' ').length > 2))
+      .sort((a, b) => b.s - a.s || ((+b.i.qty || 0) > 0) - ((+a.i.qty || 0) > 0)).slice(0, top).map(x => x.i);
+  }
   function textMatch(q, items, top = 5) {
     return items.map(it => ({ item: it, score: textScore(q, it) })).filter(x => x.score > 0.2)
       .sort((a, b) => b.score - a.score).slice(0, top);
@@ -110,7 +122,8 @@ const Recog = (() => {
   // ---------- ИИ Claude (по API-ключу пользователя, ключ хранится только на телефоне) ----------
   async function askClaude(dataUrl, items, cfg) {
     if (!cfg.apiKey) throw new Error('Нет API-ключа Claude (Ещё → Настройки)');
-    const catalog = items.slice(0, 400).map(i => `${i.id}|${i.name}|${i.sku || ''}|${i.barcode || ''}`).join('\n');
+    // весь каталог (порядок стабильный — чтобы работал кэш промпта и повторные фото стоили дёшево)
+    const catalog = items.slice().sort((a, b) => a.id < b.id ? -1 : 1).slice(0, 4000).map(i => `${i.id}|${i.name}|${i.sku || ''}|${i.barcode || ''}`).join('\n');
     const schema = {
       type: 'object', additionalProperties: false,
       required: ['match_id', 'name', 'category', 'brand', 'label_text', 'barcode', 'count_visible', 'confidence'],
@@ -126,14 +139,16 @@ const Recog = (() => {
       model: cfg.model || 'claude-opus-5-5',
       max_tokens: 2000,
       output_config: { effort: 'low', format: { type: 'json_schema', schema } },
+      system: [{ type: 'text', cache_control: { type: 'ephemeral' }, text:
+`Ты помогаешь проводить инвентаризацию в магазине. По фото определяешь товар и находишь его в каталоге.
+В каталоге один и тот же товар может быть заведён под разными названиями (на русском и английском, с префиксами вроде «ОЭСДН», «Электронная сигарета», «Жидкость для ЭСДН»). Сравнивай по бренду, линейке, крепости/объёму/затяжкам и вкусу.
+Каталог (id|название|артикул|штрихкод):
+${catalog || '(каталог пуст)'}` }],
       messages: [{
         role: 'user', content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: dataUrl.split(',')[1] } },
           { type: 'text', text:
-`Это фото товара на складе во время инвентаризации. Определи товар.
-Каталог (id|название|артикул|штрихкод):
-${catalog || '(каталог пуст)'}
-
+`Определи товар на фото.
 Если товар есть в каталоге — верни его id в match_id, иначе пустую строку.
 name — короткое понятное название на русском, category — категория, brand — бренд (или пусто),
 label_text — главный текст с этикетки, barcode — цифры штрихкода, если видны (или пусто),
@@ -159,5 +174,5 @@ count_visible — сколько одинаковых единиц видно, c
     try { return JSON.parse(txt); } catch { throw new Error('Claude вернул непонятный ответ'); }
   }
 
-  return { loadScript, fileToImage, toDataURL, barcodeFromFile, loadModel, modelReady, embed, visualMatch, textMatch, textScore, ocr, askClaude, norm };
+  return { loadScript, fileToImage, toDataURL, barcodeFromFile, loadModel, modelReady, embed, visualMatch, textMatch, textScore, qScore, search, ocr, askClaude, norm };
 })();

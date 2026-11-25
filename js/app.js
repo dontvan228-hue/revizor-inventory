@@ -116,6 +116,7 @@
     const sum = items.reduce((s, i) => s + (+i.qty || 0) * (+i.price || 0), 0);
     const low = items.filter(i => (+i.minQty || 0) > 0 && (+i.qty || 0) <= +i.minQty && (+i.qty || 0) >= 0);
     const negs = IO.negativeSuspects(items);
+    const dupItems = items.filter(i => (i.dupCards || 1) > 1);
     const sess = session ? progress() : null;
     view.innerHTML = `
       <div class="grid three">
@@ -132,7 +133,7 @@
       </div>` : `
       <div class="card" style="margin-top:12px">
         <b>Начать инвентаризацию</b>
-        <p class="small muted">Загрузите остатки из Excel или 1С, затем считайте: сканером, по фото или поиском. В конце — сличительная ведомость в Excel.</p>
+        <p class="small muted">Загрузите каталог с остатками из Saby (Excel), затем считайте: сканером, по фото или поиском. В конце — файл для загрузки в Saby и отчёт с пересортом.</p>
         <div class="row wrap"><a class="btn primary grow" href="#count">📷 Начать ревизию</a><button class="btn grow" id="hImport">⬆️ Загрузить Excel</button></div>
       </div>`}
       <h3>Быстрые действия</h3>
@@ -146,6 +147,9 @@
         <p class="small muted" style="margin:6px 0">Минус почти всегда значит пересорт (продали/пробили один товар вместо похожего) или непроведённый приход. Посчитайте эти товары и их «соседей» первыми.</p>
         <div class="list">${negs.slice(0, 5).map(x => itemRow(x.neg) + (x.partners.length ? `<div class="small muted" style="margin:-4px 0 4px 12px">↳ возможно путают с: ${x.partners.map(p => esc(p.name) + ' (' + fmt(p.qty) + ')').join(', ')}</div>` : '')).join('')}</div>
         <a class="btn block" href="#items" id="hNeg" style="margin-top:8px">Все минусовые →</a></div>` : ''}
+      ${dupItems.length ? `<div class="card" style="border-color:var(--warn)"><b style="color:var(--warn)">🪞 Дубли карточек в Saby: ${dupItems.length}</b>
+        <p class="small muted" style="margin:6px 0">Один товар заведён несколькими карточками с одинаковым названием. Приход идёт на одну, продажа на другую — отсюда минусы. При подсчёте Ревизор их складывает; в Saby их лучше объединить.</p>
+        <a class="btn block" href="#items" id="hDup">Показать дубли →</a></div>` : ''}
       ${low.length ? `<h3>Заканчивается (${low.length})</h3><div class="list">${low.slice(0, 8).map(itemRow).join('')}</div>` : ''}
       <h3>Как посчитать склад за час</h3>
       <div class="card small">
@@ -162,6 +166,7 @@
     $('#hPhoto').onclick = () => photoFlow({ countIt: false });
     $('#hExport').onclick = () => IO.exportCatalog('xlsx');
     const hn = $('#hNeg'); if (hn) hn.onclick = () => { itemsFilter.cat = '__neg'; };
+    const hd = $('#hDup'); if (hd) hd.onclick = () => { itemsFilter.cat = '__dup'; };
     bindItemRows();
   }
 
@@ -178,19 +183,21 @@
   async function renderItems() {
     const cats = categories();
     const negCount = items.filter(i => (+i.qty || 0) < 0).length;
+    const dupCount = items.filter(i => (i.dupCards || 1) > 1).length;
     view.innerHTML = `
       <div class="search"><div class="row">
         <input type="search" id="q" placeholder="Поиск: название, артикул, штрихкод" value="${esc(itemsFilter.q)}">
         <button class="btn" id="qVoice" title="Голосом">🎤</button><button class="btn" id="qScan" title="Сканировать">▦</button></div>
-        ${cats.length || negCount ? `<div class="chips" style="margin-top:8px"><span class="chip ${!itemsFilter.cat ? 'on' : ''}" data-cat="">Все</span>${negCount ? `<span class="chip ${itemsFilter.cat === '__neg' ? 'on' : ''}" data-cat="__neg">⚠️ В минусе (${negCount})</span>` : ''}${cats.map(c => `<span class="chip ${itemsFilter.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}</div>` : ''}
+        ${cats.length || negCount ? `<div class="chips" style="margin-top:8px"><span class="chip ${!itemsFilter.cat ? 'on' : ''}" data-cat="">Все</span>${negCount ? `<span class="chip ${itemsFilter.cat === '__neg' ? 'on' : ''}" data-cat="__neg">⚠️ В минусе (${negCount})</span>` : ''}${dupCount ? `<span class="chip ${itemsFilter.cat === '__dup' ? 'on' : ''}" data-cat="__dup">🪞 Дубли (${dupCount})</span>` : ''}${cats.map(c => `<span class="chip ${itemsFilter.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}</div>` : ''}
       </div>
       <div class="row" style="margin-bottom:10px"><button class="btn primary grow" id="add">➕ Добавить</button><button class="btn grow" id="imp">⬆️ Импорт Excel</button></div>
       <div class="list" id="list"></div>`;
     const draw = () => {
       let list = items;
       if (itemsFilter.cat === '__neg') list = list.filter(i => (+i.qty || 0) < 0);
+      else if (itemsFilter.cat === '__dup') list = list.filter(i => (i.dupCards || 1) > 1);
       else if (itemsFilter.cat) list = list.filter(i => i.category === itemsFilter.cat);
-      if (itemsFilter.q) list = list.map(i => ({ i, s: Recog.textScore(itemsFilter.q, i) + (Recog.norm(i.name).includes(Recog.norm(itemsFilter.q)) ? 1 : 0) })).filter(x => x.s > 0.2).sort((a, b) => b.s - a.s).map(x => x.i);
+      if (itemsFilter.q) list = Recog.search(itemsFilter.q, list, 300);
       $('#list').innerHTML = list.length ? list.slice(0, 300).map(itemRow).join('') + (list.length > 300 ? `<p class="muted small">Показаны первые 300 из ${list.length}. Уточните поиск.</p>` : '')
         : `<div class="empty"><div class="big">📦</div>${items.length ? 'Ничего не найдено' : 'Каталог пуст. Добавьте товары или загрузите Excel.'}</div>`;
       bindItemRows($('#list'));
@@ -212,6 +219,7 @@
     it.photos = it.photos || []; it.emb = it.emb || [];
     const cats = categories();
     modal(isNew ? 'Новый товар' : 'Товар', `
+      ${(it.dupCards || 1) > 1 ? `<div class="card small" style="border-color:var(--warn)">🪞 В Saby ${it.dupCards} карточки с этим названием${it.priceConflict ? ', <b>цены разные</b>' : ''}:<br>${(it.dupInfo || []).map(esc).join('<br>')}<br><span class="muted">Количество по учёту здесь — сумма по всем карточкам.</span></div>` : ''}
       <label class="field"><span>Наименование *</span><div class="row"><input type="text" id="fName" value="${esc(it.name)}"><button class="btn" id="fVoice">🎤</button></div></label>
       <div class="grid two">
         <label class="field"><span>Артикул</span><input type="text" id="fSku" value="${esc(it.sku)}"></label>
@@ -306,7 +314,8 @@
 
   // ---------- ревизия ----------
   function progress() {
-    const total = session.scope === 'counted' ? Object.keys(session.counts).length : items.length;
+    // считать нужно то, что есть по учёту (≠0) + всё, что нашли сверх этого; нулевые позиции не тормозят прогресс
+    const total = session.scope === 'counted' ? Object.keys(session.counts).length : items.filter(i => (+i.qty || 0) !== 0 || session.counts[i.id]).length;
     const done = Object.keys(session.counts).length;
     const ms = (session.finishedAt || Date.now()) - session.startedAt - (session.pausedMs || 0);
     const min = Math.max(ms / 60000, 0.01);
@@ -361,7 +370,7 @@
           <label class="field"><span>Что сравниваем</span><select id="sScope">
             <option value="all">Весь каталог (что не посчитано — недостача)</option>
             <option value="counted">Только посчитанное (частичная ревизия зоны)</option></select></label>
-          <p class="small muted">В каталоге ${items.length} товаров. ${items.length ? '' : 'Можно начинать и с пустым каталогом — неизвестные штрихкоды можно сразу завести как новые товары.'}</p>
+          <p class="small muted">В каталоге ${items.length} товаров, из них с остатком: ${items.filter(i => (+i.qty || 0) !== 0).length}. ${items.length ? '' : 'Можно начинать и с пустым каталогом — неизвестные штрихкоды можно сразу завести как новые товары.'}</p>
           <button class="btn primary block" id="sGo">▶️ Начать подсчёт</button></div>
         <div class="card small muted">Совет: для ускорения включите «Каждый скан = +1» (Ещё → Настройки) и считайте одинаковые товары пиком сканера подряд.</div>`;
       $('#sGo').onclick = async () => { await startSession($('#sName').value.trim() || 'Ревизия', $('#sScope').value); renderCount(); };
@@ -454,13 +463,13 @@
       const draw = () => {
         const q = $('#cq').value;
         let list, head = '';
-        if (q) list = Recog.textMatch(q, items, 30).map(x => x.item).concat(items.filter(i => Recog.norm(i.name).includes(Recog.norm(q)))).filter((v, i, a) => a.indexOf(v) === i).slice(0, 30);
+        if (q) list = Recog.search(q, items, 30);
         else {
           // сначала минусовые и похожие на них (кандидаты на пересорт), потом остальные непосчитанные
           const pri = [];
           for (const x of IO.negativeSuspects(items)) pri.push(x.neg, ...x.partners);
           const pr = [...new Set(pri)].filter(i => !session.counts[i.id]);
-          list = pr.concat(items.filter(i => !session.counts[i.id] && !pr.includes(i))).slice(0, 40);
+          list = pr.concat(items.filter(i => !session.counts[i.id] && !pr.includes(i) && (+i.qty || 0) > 0)).slice(0, 40);
           head = pr.length ? `<div class="small diff-neg">⚠️ Сначала: минусовые и похожие на них (${pr.length})</div>` : '<div class="small muted">Ещё не посчитаны:</div>';
         }
         $('#cqList').innerHTML = head + list.map(itemRow).join('');
@@ -496,15 +505,26 @@
     feedback(false);
     if (scanner) scanner.pause(true);
     const resume = () => { if (scanner) try { scanner.resume(); } catch { } };
-    modal('Не найден в каталоге', `<p>Код <span class="kbd">${esc(code)}</span> отсутствует в каталоге.</p>
-      <div class="grid"><button class="btn primary" id="uNew">➕ Создать товар с этим кодом</button>
-      <button class="btn" id="uPhoto">📷 Сфотографировать и определить</button>
-      <button class="btn" id="uBind">🔗 Привязать код к существующему товару</button>
-      <button class="btn" id="uSkip">📝 Записать как неизвестный (+1)</button></div>`, b => {
+    modal('Новый штрихкод', `<p class="small" style="margin-top:0">Код <span class="kbd">${esc(code)}</span> ещё не привязан. Найдите товар — код запомнится, в следующий раз пик сразу посчитает.</p>
+      <div class="row"><input type="search" id="uQ" placeholder="Начните вводить: lost mary мята…" class="grow"><button class="btn" id="uV">🎤</button></div>
+      <div class="list" id="uList" style="margin:8px 0 12px"></div>
+      <div class="grid two"><button class="btn" id="uPhoto">📷 Узнать по фото</button>
+      <button class="btn" id="uNew">➕ Новый товар</button>
+      <button class="btn" id="uSkip">📝 Неизвестный +1</button><button class="btn" id="uBind">📋 Весь список</button></div>`, b => {
       onModalClose = resume;
+      const bindTo = async it => { onModalClose = null; closeModal(); if (it.barcode) { it.barcodes = [...new Set([...(it.barcodes || []), code])]; } else it.barcode = code; await saveItem(it); await addCount(it.id, 1, method); toast('Код привязан к «' + it.name + '»'); resume(); };
+      const drawU = () => {
+        const q = $('#uQ', b).value.trim();
+        const list = q.length < 2 ? [] : Recog.search(q, items, 12);
+        $('#uList', b).innerHTML = list.map(itemRow).join('') || (q.length >= 2 ? '<div class="small muted">Не найдено</div>' : '');
+        $$('#uList .item', b).forEach(el => el.onclick = () => bindTo(byId(el.dataset.id)));
+      };
+      $('#uQ', b).oninput = drawU;
+      $('#uV', b).onclick = () => voiceInput(t => { $('#uQ', b).value = t; drawU(); });
+      setTimeout(() => $('#uQ', b) && $('#uQ', b).focus(), 50);
       $('#uNew', b).onclick = () => { onModalClose = null; editItem(null, { barcode: code, _after: async it => { await addCount(it.id, 1, method); resume(); } }); };
       $('#uPhoto', b).onclick = async () => { onModalClose = null; closeModal(); const f = await pickFile('image/*', { capture: true }); if (f) photoFlow({ file: f, countIt: true, code }); resume(); };
-      $('#uBind', b).onclick = () => { onModalClose = null; pickItem('Какому товару принадлежит код?', async it => { it.barcode = code; await saveItem(it); await addCount(it.id, 1, method); toast('Код привязан'); resume(); }); };
+      $('#uBind', b).onclick = () => { onModalClose = null; pickItem('Какому товару принадлежит код?', it => bindTo(it)); };
       $('#uSkip', b).onclick = async () => { session.unknown.push({ code, qty: 1, loc: S.loc }); session.log.push({ t: Date.now(), id: '?unknown', d: 1, m: method, loc: S.loc }); await saveSession(); closeModal(); drawProgress(); toast('Записан как неизвестный'); };
     });
   }
@@ -531,7 +551,7 @@
     modal(title, `<input type="search" id="pq" placeholder="Поиск"><div class="list" id="pl" style="margin-top:8px"></div>`, b => {
       const draw = () => {
         const q = $('#pq', b).value;
-        const list = q ? items.filter(i => Recog.textScore(q, i) > 0.2 || Recog.norm(i.name).includes(Recog.norm(q))).slice(0, 40) : items.slice(0, 40);
+        const list = q ? Recog.search(q, items, 40) : items.slice(0, 40);
         $('#pl', b).innerHTML = list.map(itemRow).join('') || '<div class="empty">Нет товаров</div>';
         $$('#pl .item', b).forEach(el => el.onclick = () => { closeModal(); onPick(byId(el.dataset.id)); });
       };
@@ -756,7 +776,7 @@
       toast('Читаю файл…');
       const r = await IO.importItems(f);
       await reload();
-      toast(`Готово: новых ${r.added}, обновлено ${r.updated}`, 3500);
+      toast(`Готово: новых ${r.added}, обновлено ${r.updated}${r.dups ? `, дублей карточек сложено: ${r.dups}` : ''}`, 4500);
       route();
     } catch (e) { toast(e.message, 4500); }
   }

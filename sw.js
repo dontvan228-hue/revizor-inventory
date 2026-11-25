@@ -1,5 +1,5 @@
 // Офлайн-режим: приложение и загруженные библиотеки/нейросеть кэшируются на телефоне.
-const VERSION = 'revizor-v2';
+const VERSION = 'revizor-v3';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/db.js', 'js/recognize.js', 'js/io.js', 'js/app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 const CDN = ['cdn.jsdelivr.net', 'unpkg.com', 'storage.googleapis.com', 'tessdata.projectnaptha.com'];
 
